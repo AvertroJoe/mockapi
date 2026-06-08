@@ -1,0 +1,25 @@
+services:
+  mockapi:
+    build: .
+    image: mockapi:latest
+    container_name: mockapi
+    ports:
+      - "${HOST_PORT:-8000}:8000"
+    volumes:
+      # Persist config and uploaded files across container restarts.
+      # On EC2 you can back this with an EBS volume or EFS mount.
+      - mockapi_data:/data
+    env_file:
+      - .env
+    environment:
+      - DATA_DIR=/data
+    restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  mockapi_data:
+    driver: local
