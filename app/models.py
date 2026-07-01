@@ -49,7 +49,8 @@ class EndpointRecord(BaseModel):
 class APIKeyRecord(BaseModel):
     id: str = Field(default_factory=_uuid)
     name: str
-    key: str               # stored in plaintext (random urlsafe token)
+    key_prefix: str        # first 8 chars of the plaintext key — safe to display, aids identification
+    key_hash: str           # sha256 hex digest of the full key — the plaintext key is never stored
     created_at: str = Field(default_factory=_now)
 
 

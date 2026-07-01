@@ -23,7 +23,7 @@ import csv
 import io
 import json
 import os
-import xml.etree.ElementTree as ET
+import defusedxml.ElementTree as ET
 import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -37,7 +37,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 
 from app import storage
-from app.auth import _bearer_scheme
+from app.auth import _bearer_scheme, hash_api_key
 from app.models import (
     APIKeyRecord,
     ArtifactRecord,
@@ -54,11 +54,44 @@ _bearer = HTTPBearer(auto_error=True)
 
 def _check_admin(credentials: HTTPAuthorizationCredentials = Depends(_bearer)):
     admin_token = os.getenv("ADMIN_TOKEN", "changeme")
-    if credentials.credentials != admin_token:
+    # secrets.compare_digest runs in constant time regardless of where the
+    # strings differ, unlike `!=`, which short-circuits on the first
+    # mismatched byte and so leaks a timing signal an attacker could use to
+    # guess the token character-by-character.
+    if not secrets.compare_digest(credentials.credentials.encode(), admin_token.encode()):
         raise HTTPException(status_code=403, detail="Invalid admin token")
 
 
 # ── Endpoints + artifact (combined, 1:1) ───────────────────────
+
+MAX_UPLOAD_BYTES = 5 * 1024 * 1024  # 5 MB
+
+
+async def _read_limited(file: UploadFile, max_bytes: int) -> bytes:
+    """Read an upload in fixed-size chunks, rejecting it as soon as the
+    running total exceeds max_bytes.
+
+    Plain `await file.read()` buffers the entire body first and only lets
+    you inspect its size afterwards — for an upload with no size limit at
+    all, that's an easy memory/disk exhaustion DoS (send one huge file,
+    repeat). Reading in chunks means we never hold more than a few KB past
+    the limit before bailing out.
+    """
+    chunks = []
+    total = 0
+    while True:
+        chunk = await file.read(64 * 1024)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            raise HTTPException(
+                status_code=413,
+                detail=f"File exceeds the maximum upload size of {max_bytes} bytes",
+            )
+        chunks.append(chunk)
+    return b"".join(chunks)
+
 
 @router.post("/endpoints", summary="Create a mock endpoint (uploads file atomically)")
 async def create_endpoint(
@@ -69,7 +102,7 @@ async def create_endpoint(
     file: UploadFile = File(..., description="CSV, JSON, or XML artifact"),
     _: None = Depends(_check_admin),
 ):
-    content = await file.read()
+    content = await _read_limited(file, MAX_UPLOAD_BYTES)
     original_name = file.filename or "upload"
 
     if original_name.endswith(".csv"):
@@ -191,8 +224,15 @@ class _APIKeyCreate(BaseModel):
 
 @router.get("/auth/api-keys", summary="List API keys (keys are masked)")
 async def list_api_keys(_: None = Depends(_check_admin)):
+    # Only the prefix + creation metadata are returned — key_hash never
+    # leaves the server, and there's no plaintext key left to show anyway.
     return [
-        {**r.model_dump(), "key": r.key[:8] + "..." + r.key[-4:]}
+        {
+            "id": r.id,
+            "name": r.name,
+            "key": r.key_prefix + "…",
+            "created_at": r.created_at,
+        }
         for r in storage.get_data().api_keys.values()
     ]
 
@@ -200,12 +240,23 @@ async def list_api_keys(_: None = Depends(_check_admin)):
 @router.post("/auth/api-keys", summary="Create a new API key")
 async def create_api_key(body: _APIKeyCreate, _: None = Depends(_check_admin)):
     key_value = secrets.token_urlsafe(32)
-    record = APIKeyRecord(name=body.name, key=key_value)
+    record = APIKeyRecord(
+        name=body.name,
+        key_prefix=key_value[:8],
+        key_hash=hash_api_key(key_value),
+    )
 
     storage.mutate(lambda d: d.api_keys.update({record.id: record}))
 
-    # Return the full key once — not stored in plain form after this
-    return {**record.model_dump(), "key": key_value, "_note": "Save this key — it won't be shown again"}
+    # The full key is only ever available here, at creation time — only
+    # its hash is persisted, so this is the caller's one chance to save it.
+    return {
+        "id": record.id,
+        "name": record.name,
+        "created_at": record.created_at,
+        "key": key_value,
+        "_note": "Save this key — it won't be shown again",
+    }
 
 
 @router.delete("/auth/api-keys/{key_id}", summary="Delete an API key")
