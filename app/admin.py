@@ -36,6 +36,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 
+from app import storage
 from app.auth import _bearer_scheme
 from app.models import (
     APIKeyRecord,
@@ -45,7 +46,6 @@ from app.models import (
     EndpointRecord,
     JWTConfigRecord,
 )
-from app.storage import ARTIFACTS_DIR, get_data, mutate
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -103,7 +103,7 @@ async def create_endpoint(
     path = path if path.startswith("/") else f"/{path}"
 
     # Check for duplicate endpoint
-    data = get_data()
+    data = storage.get_data()
     for ep in data.endpoints.values():
         if ep.path == path and ep.method.upper() == method.upper():
             raise HTTPException(
@@ -113,7 +113,7 @@ async def create_endpoint(
 
     artifact_id = str(uuid.uuid4())
     stored_filename = f"{artifact_id}{Path(original_name).suffix}"
-    (ARTIFACTS_DIR / stored_filename).write_bytes(content)
+    (storage.ARTIFACTS_DIR / stored_filename).write_bytes(content)
 
     artifact = ArtifactRecord(
         id=artifact_id,
@@ -134,7 +134,7 @@ async def create_endpoint(
         d.artifacts[artifact_id] = artifact
         d.endpoints[endpoint.id] = endpoint
 
-    mutate(_apply)
+    storage.mutate(_apply)
 
     return {
         "endpoint": endpoint.model_dump(),
@@ -144,7 +144,7 @@ async def create_endpoint(
 
 @router.get("/endpoints", summary="List all mock endpoints")
 async def list_endpoints(_: None = Depends(_check_admin)):
-    data = get_data()
+    data = storage.get_data()
     result = []
     for ep in data.endpoints.values():
         artifact = data.artifacts.get(ep.artifact_id)
@@ -160,7 +160,7 @@ async def list_endpoints(_: None = Depends(_check_admin)):
 
 @router.delete("/endpoints/{endpoint_id}", summary="Delete endpoint and its artifact")
 async def delete_endpoint(endpoint_id: str, _: None = Depends(_check_admin)):
-    data = get_data()
+    data = storage.get_data()
     endpoint = data.endpoints.get(endpoint_id)
     if not endpoint:
         raise HTTPException(status_code=404, detail="Endpoint not found")
@@ -172,11 +172,11 @@ async def delete_endpoint(endpoint_id: str, _: None = Depends(_check_admin)):
         if endpoint.artifact_id in d.artifacts:
             del d.artifacts[endpoint.artifact_id]
 
-    mutate(_apply)
+    storage.mutate(_apply)
 
     # Remove file after mutation committed
     if artifact:
-        file_path = ARTIFACTS_DIR / artifact.filename
+        file_path = storage.ARTIFACTS_DIR / artifact.filename
         if file_path.exists():
             file_path.unlink()
 
@@ -193,7 +193,7 @@ class _APIKeyCreate(BaseModel):
 async def list_api_keys(_: None = Depends(_check_admin)):
     return [
         {**r.model_dump(), "key": r.key[:8] + "..." + r.key[-4:]}
-        for r in get_data().api_keys.values()
+        for r in storage.get_data().api_keys.values()
     ]
 
 
@@ -202,7 +202,7 @@ async def create_api_key(body: _APIKeyCreate, _: None = Depends(_check_admin)):
     key_value = secrets.token_urlsafe(32)
     record = APIKeyRecord(name=body.name, key=key_value)
 
-    mutate(lambda d: d.api_keys.update({record.id: record}))
+    storage.mutate(lambda d: d.api_keys.update({record.id: record}))
 
     # Return the full key once — not stored in plain form after this
     return {**record.model_dump(), "key": key_value, "_note": "Save this key — it won't be shown again"}
@@ -210,10 +210,10 @@ async def create_api_key(body: _APIKeyCreate, _: None = Depends(_check_admin)):
 
 @router.delete("/auth/api-keys/{key_id}", summary="Delete an API key")
 async def delete_api_key(key_id: str, _: None = Depends(_check_admin)):
-    data = get_data()
+    data = storage.get_data()
     if key_id not in data.api_keys:
         raise HTTPException(status_code=404, detail="API key not found")
-    mutate(lambda d: d.api_keys.pop(key_id))
+    storage.mutate(lambda d: d.api_keys.pop(key_id))
     return {"deleted": key_id}
 
 
@@ -228,29 +228,29 @@ class _UserCreate(BaseModel):
 async def list_users(_: None = Depends(_check_admin)):
     return [
         {"username": u, "created_at": r.created_at}
-        for u, r in get_data().basic_users.items()
+        for u, r in storage.get_data().basic_users.items()
     ]
 
 
 @router.post("/auth/users", summary="Create a basic-auth user")
 async def create_user(body: _UserCreate, _: None = Depends(_check_admin)):
-    data = get_data()
+    data = storage.get_data()
     if body.username in data.basic_users:
         raise HTTPException(status_code=409, detail="Username already exists")
 
     pw_hash = bcrypt.hashpw(body.password.encode(), bcrypt.gensalt()).decode()
     record = BasicUserRecord(username=body.username, password_hash=pw_hash)
 
-    mutate(lambda d: d.basic_users.update({body.username: record}))
+    storage.mutate(lambda d: d.basic_users.update({body.username: record}))
     return {"username": record.username, "created_at": record.created_at}
 
 
 @router.delete("/auth/users/{username}", summary="Delete a basic-auth user")
 async def delete_user(username: str, _: None = Depends(_check_admin)):
-    data = get_data()
+    data = storage.get_data()
     if username not in data.basic_users:
         raise HTTPException(status_code=404, detail="User not found")
-    mutate(lambda d: d.basic_users.pop(username))
+    storage.mutate(lambda d: d.basic_users.pop(username))
     return {"deleted": username}
 
 
@@ -269,7 +269,7 @@ class _JWTTokenCreate(BaseModel):
 
 @router.get("/auth/jwt", summary="Show JWT config status")
 async def get_jwt_status(_: None = Depends(_check_admin)):
-    cfg = get_data().jwt_config
+    cfg = storage.get_data().jwt_config
     if not cfg:
         return {"configured": False}
     return {"configured": True, "algorithm": cfg.algorithm}
@@ -279,7 +279,7 @@ async def get_jwt_status(_: None = Depends(_check_admin)):
 async def set_jwt_config(body: _JWTSecretSet, _: None = Depends(_check_admin)):
     secret = body.secret or secrets.token_urlsafe(32)
     record = JWTConfigRecord(secret=secret, algorithm=body.algorithm)
-    mutate(lambda d: setattr(d, "jwt_config", record))
+    storage.mutate(lambda d: setattr(d, "jwt_config", record))
     return {
         "algorithm": record.algorithm,
         "secret": secret,
@@ -289,7 +289,7 @@ async def set_jwt_config(body: _JWTSecretSet, _: None = Depends(_check_admin)):
 
 @router.post("/auth/jwt/token", summary="Generate a signed JWT")
 async def generate_token(body: _JWTTokenCreate, _: None = Depends(_check_admin)):
-    data = get_data()
+    data = storage.get_data()
     if not data.jwt_config:
         raise HTTPException(
             status_code=400,
