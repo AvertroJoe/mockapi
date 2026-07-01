@@ -25,6 +25,16 @@ class AuthType(str, Enum):
     jwt = "jwt"
 
 
+class HTTPMethod(str, Enum):
+    GET = "GET"
+    POST = "POST"
+    PUT = "PUT"
+    PATCH = "PATCH"
+    DELETE = "DELETE"
+    HEAD = "HEAD"
+    OPTIONS = "OPTIONS"
+
+
 # ── Records ────────────────────────────────────────────────────
 
 class ArtifactRecord(BaseModel):

@@ -49,6 +49,19 @@ def test_endpoint_create_and_list(cli_env, tmp_path):
     assert "users.csv" in listed.stdout
 
 
+def test_endpoint_create_shows_structured_validation_error(cli_env, tmp_path):
+    csv_file = tmp_path / "users.csv"
+    csv_file.write_text("id,name\n1,Alice\n")
+
+    result = runner.invoke(
+        cli_main.app,
+        ["endpoint", "create", "--path", "/health", "--file", str(csv_file)],
+    )
+    assert result.exit_code != 0
+    assert "path" in result.stdout
+    assert "reserved" in result.stdout
+
+
 def test_endpoint_create_missing_file_errors(cli_env, tmp_path):
     missing = tmp_path / "does-not-exist.csv"
     result = runner.invoke(cli_main.app, ["endpoint", "create", "--path", "/api/x", "--file", str(missing)])

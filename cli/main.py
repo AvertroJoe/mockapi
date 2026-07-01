@@ -73,7 +73,15 @@ def _ok(resp: httpx.Response) -> dict:
             detail = resp.json().get("detail", resp.text)
         except Exception:
             detail = resp.text
-        console.print(f"[bold red]Error {resp.status_code}:[/bold red] {detail}")
+
+        # Validation errors come back as {"errors": [{"field", "reason"}, ...]}
+        # — render each on its own line instead of a raw dict repr.
+        if isinstance(detail, dict) and isinstance(detail.get("errors"), list):
+            console.print(f"[bold red]Error {resp.status_code}:[/bold red]")
+            for err in detail["errors"]:
+                console.print(f"  [yellow]{err.get('field', '?')}[/yellow]: {err.get('reason', err)}")
+        else:
+            console.print(f"[bold red]Error {resp.status_code}:[/bold red] {detail}")
         raise typer.Exit(1)
     return resp.json()
 
