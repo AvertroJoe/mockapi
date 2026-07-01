@@ -20,3 +20,7 @@ mockapi = "cli.main:app"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["cli*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

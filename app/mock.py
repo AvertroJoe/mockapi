@@ -15,17 +15,17 @@ import json
 from fastapi import HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 
+from app import storage
 from app.auth import enforce_auth
-from app.storage import ARTIFACTS_DIR, get_data
 
 
 def _build_response(artifact_id: str) -> Response:
-    data = get_data()
+    data = storage.get_data()
     artifact = data.artifacts.get(artifact_id)
     if not artifact:
         raise HTTPException(status_code=500, detail="Artifact record missing — server misconfigured")
 
-    file_path = ARTIFACTS_DIR / artifact.filename
+    file_path = storage.ARTIFACTS_DIR / artifact.filename
     if not file_path.exists():
         raise HTTPException(status_code=500, detail="Artifact file missing from disk")
 
@@ -48,7 +48,7 @@ def _build_response(artifact_id: str) -> Response:
 async def handle_mock_request(path: str, request: Request) -> Response:
     norm_path = f"/{path}" if not path.startswith("/") else path
 
-    data = get_data()
+    data = storage.get_data()
     endpoint = None
     for ep in data.endpoints.values():
         if ep.path == norm_path and ep.method.upper() == request.method.upper():
