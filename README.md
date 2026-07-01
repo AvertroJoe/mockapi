@@ -232,6 +232,24 @@ curl http://<your-ec2-ip>:8000/api/users
 | `--auth` | `none` | Auth type: `none`, `api_key`, `basic`, or `jwt` |
 | `--desc` | — | Optional description shown in listings |
 
+### Validation rules
+
+Uploads and endpoint fields are validated before anything is saved:
+
+- **File size**: capped at 5MB.
+- **CSV**: must not be empty, must have a header row, and every row must have the same number of columns as the header. Capped at 10,000 rows.
+- **JSON**: must be a single object or an array of objects — a bare scalar (`42`, `"hello"`) or an array of non-objects (`["a", "b"]`) is rejected.
+- **XML**: must be well-formed; entity expansion (the "billion laughs" DoS pattern) is rejected outright.
+- **Encoding**: files must be valid UTF-8.
+- **`--path`**: must be a bare path — no query string, fragment, or whitespace — and can't collide with the reserved `/admin/*` or `/health` paths (a mock endpoint there could never actually be reached, since those routes are matched first).
+- **`--method`**: must be one of `GET`, `POST`, `PUT`, `PATCH`, `DELETE`, `HEAD`, `OPTIONS` (case-sensitive, per RFC 7231 — `get` is not `GET`).
+
+A validation failure returns `422` with a structured body:
+
+```json
+{"detail": {"errors": [{"field": "path", "reason": "..."}]}}
+```
+
 ---
 
 ## Authentication

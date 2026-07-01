@@ -44,6 +44,7 @@ from app.models import (
     AuthType,
     BasicUserRecord,
     EndpointRecord,
+    HTTPMethod,
     JWTConfigRecord,
 )
 
@@ -93,15 +94,91 @@ async def _read_limited(file: UploadFile, max_bytes: int) -> bytes:
     return b"".join(chunks)
 
 
+def validation_error(field: str, reason: str) -> HTTPException:
+    """A 422 shaped the same way as app.main's RequestValidationError
+    handler, so every validation failure — ours or FastAPI's own — comes
+    back as `{"detail": {"errors": [{"field", "reason"}, ...]}}`."""
+    return HTTPException(status_code=422, detail={"errors": [{"field": field, "reason": reason}]})
+
+
+# Reserved so a mock endpoint can never be registered somewhere it could
+# never actually be reached — /admin/* and /health are matched by routes
+# registered ahead of the catch-all mock handler (see app/main.py).
+_RESERVED_EXACT_PATHS = {"/admin", "/health"}
+_RESERVED_PREFIXES = ("/admin/",)
+
+MAX_CSV_ROWS = 10_000
+
+
+def _validate_path(raw_path: str) -> str:
+    path = raw_path if raw_path.startswith("/") else f"/{raw_path}"
+
+    if any(c in path for c in "?#") or any(c.isspace() for c in path):
+        raise validation_error(
+            "path", "Path must be a bare URL path — no query string, fragment, or whitespace"
+        )
+    if path.strip("/") == "":
+        raise validation_error("path", "Path must not be empty")
+    if path in _RESERVED_EXACT_PATHS or path.startswith(_RESERVED_PREFIXES):
+        raise validation_error(
+            "path",
+            f"{path!r} is reserved by the server itself (/admin/* and /health) and "
+            "could never be reached by a mock endpoint",
+        )
+    return path
+
+
+def _validate_csv(text: str) -> int:
+    # text is already known non-empty (checked by the caller), so
+    # DictReader always finds at least a header row here.
+    reader = csv.DictReader(io.StringIO(text))
+
+    row_count = 0
+    for i, row in enumerate(reader, start=2):  # row 1 is the header
+        # csv.DictReader fills missing trailing fields with None (restval)
+        # and collects extra fields under a None key (restkey) — either
+        # means this row doesn't have the same column count as the header.
+        if None in row or None in row.values():
+            raise validation_error(
+                "file", f"Row {i} has a different number of columns than the header"
+            )
+        row_count += 1
+        if row_count > MAX_CSV_ROWS:
+            raise validation_error("file", f"CSV file exceeds the maximum of {MAX_CSV_ROWS} rows")
+
+    return row_count
+
+
+def _validate_json(text: str) -> Optional[int]:
+    parsed = json.loads(text)  # may raise json.JSONDecodeError — caller wraps that
+
+    if isinstance(parsed, list):
+        if not all(isinstance(item, dict) for item in parsed):
+            raise validation_error("file", "JSON array must contain only objects")
+        return len(parsed)
+    elif isinstance(parsed, dict):
+        return None
+    else:
+        raise validation_error("file", "JSON file must be an object or an array of objects")
+
+
+def _validate_xml(text: str) -> int:
+    root = ET.fromstring(text)  # may raise — caller wraps that
+    # Count direct children of the root — e.g. <users><user/><user/></users> → 2
+    return len(list(root))
+
+
 @router.post("/endpoints", summary="Create a mock endpoint (uploads file atomically)")
 async def create_endpoint(
     path: str = Form(..., description="URL path, e.g. /api/users"),
-    method: str = Form("GET", description="HTTP method"),
+    method: HTTPMethod = Form(HTTPMethod.GET, description="HTTP method"),
     auth_type: AuthType = Form(AuthType.none),
     description: Optional[str] = Form(None),
     file: UploadFile = File(..., description="CSV, JSON, or XML artifact"),
     _: None = Depends(_check_admin),
 ):
+    path = _validate_path(path)
+
     content = await _read_limited(file, MAX_UPLOAD_BYTES)
     original_name = file.filename or "upload"
 
@@ -112,36 +189,35 @@ async def create_endpoint(
     elif original_name.endswith(".xml"):
         fmt = "xml"
     else:
-        raise HTTPException(
-            status_code=400, detail="Only .csv, .json, and .xml files are supported"
-        )
+        raise validation_error("file", "Only .csv, .json, and .xml files are supported")
 
-    # Validate + count rows/elements
-    row_count: Optional[int] = None
     try:
         text = content.decode("utf-8")
-        if fmt == "csv":
-            row_count = sum(1 for _ in csv.DictReader(io.StringIO(text)))
-        elif fmt == "json":
-            parsed = json.loads(text)
-            row_count = len(parsed) if isinstance(parsed, list) else None
-        else:  # xml
-            root = ET.fromstring(text)
-            # Count direct children of the root — e.g. <users><user/><user/></users> → 2
-            row_count = len(list(root))
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"Could not parse file: {exc}")
+    except UnicodeDecodeError:
+        raise validation_error("file", "File is not valid UTF-8 text")
 
-    # Normalise path
-    path = path if path.startswith("/") else f"/{path}"
+    if not text.strip():
+        raise validation_error("file", "File is empty")
+
+    try:
+        if fmt == "csv":
+            row_count = _validate_csv(text)
+        elif fmt == "json":
+            row_count = _validate_json(text)
+        else:  # xml
+            row_count = _validate_xml(text)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise validation_error("file", f"Could not parse file: {exc}")
 
     # Check for duplicate endpoint
     data = storage.get_data()
     for ep in data.endpoints.values():
-        if ep.path == path and ep.method.upper() == method.upper():
+        if ep.path == path and ep.method == method.value:
             raise HTTPException(
                 status_code=409,
-                detail=f"Endpoint {method.upper()} {path} already exists",
+                detail=f"Endpoint {method.value} {path} already exists",
             )
 
     artifact_id = str(uuid.uuid4())
@@ -157,7 +233,7 @@ async def create_endpoint(
     )
     endpoint = EndpointRecord(
         path=path,
-        method=method.upper(),
+        method=method.value,
         artifact_id=artifact_id,
         auth_type=auth_type,
         description=description,

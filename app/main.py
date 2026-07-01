@@ -2,6 +2,7 @@ import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from app.admin import router as admin_router
@@ -44,6 +45,26 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
+
+@app.exception_handler(RequestValidationError)
+async def _validation_error_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+    """Reshape FastAPI's built-in validation errors to match the shape our
+    own manual validation raises (see app.admin.validation_error) — one
+    consistent {"errors": [{"field", "reason"}, ...]} body for every 422,
+    whether it came from a Pydantic/Form type check or our own checks.
+    """
+    errors = [
+        {
+            # loc is a tuple like ("body", "method") or ("form", "path");
+            # drop the first segment (the request location, not a field name).
+            "field": ".".join(str(p) for p in err["loc"][1:]) or str(err["loc"][-1]),
+            "reason": err["msg"],
+        }
+        for err in exc.errors()
+    ]
+    return JSONResponse(status_code=422, content={"detail": {"errors": errors}})
+
 
 # Admin routes registered BEFORE the catch-all so they take priority.
 app.include_router(admin_router)
