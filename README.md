@@ -446,6 +446,22 @@ docker run --rm \
 
 ---
 
+## Security notes
+
+**`ADMIN_TOKEN` is required.** The server now refuses to start if `ADMIN_TOKEN` is unset or left as the default `changeme` — every `/admin/*` route (and therefore every mock endpoint it can create) is only as protected as that one shared secret, so booting with no real value set is treated as a startup error rather than a silently insecure default. The EC2 setup script already auto-generates a random token, so this only matters if you're running the container some other way.
+
+**Put TLS in front of this.** The admin token, API keys, and Basic-auth credentials all travel as plain HTTP headers — there's no TLS termination built into the container itself. For anything beyond local testing, put a reverse proxy (Caddy or nginx with a Let's Encrypt cert) or an AWS ALB with an ACM certificate in front of port 8000, and don't expose port 8000 directly to the internet.
+
+**Upgrading to a non-root container.** As of this change, the container runs as an unprivileged `mockapi` user (UID/GID `999`) instead of root. A **brand-new** `mockapi_data` volume picks up the right ownership automatically on first mount. If you're upgrading an **existing** deployment, the volume's files were written by root under the old image and need a one-time ownership fix, or the new non-root process won't be able to write to them:
+
+```bash
+docker compose down
+docker run --rm -v mockapi_data:/data alpine chown -R 999:999 /data
+docker compose up -d --build
+```
+
+---
+
 ## Troubleshooting
 
 **ConnectTimeout / "Operation timed out"** — port 8000 isn't open in your EC2 security group. Go to AWS Console → EC2 → Security Groups → Inbound Rules and add a TCP rule for port 8000. Also confirm the container is running: `docker ps`.

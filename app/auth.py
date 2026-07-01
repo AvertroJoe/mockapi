@@ -4,27 +4,34 @@ and mock route handlers (per-endpoint auth checks).
 """
 
 import base64
+import hashlib
+import secrets
 
 import bcrypt
 import jwt as pyjwt
 from fastapi import HTTPException, Request
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi.security import HTTPBearer
 
 from app.models import AuthType
 from app.storage import get_data
 
 # ── Admin auth ─────────────────────────────────────────────────
 
+# Shared HTTPBearer scheme instance used by app.admin's admin-token
+# dependency (the actual check lives there — see app/admin.py::_check_admin).
 _bearer_scheme = HTTPBearer(auto_error=True)
 
 
-def require_admin(credentials: HTTPAuthorizationCredentials = None):
-    """FastAPI dependency: validates the admin Bearer token."""
-    import os
-    admin_token = os.getenv("ADMIN_TOKEN", "changeme")
-    if credentials is None or credentials.credentials != admin_token:
-        raise HTTPException(status_code=403, detail="Invalid or missing admin token")
-    return credentials
+def hash_api_key(key: str) -> str:
+    """SHA-256 hex digest of an API key.
+
+    API keys here are high-entropy random tokens (32 bytes from
+    secrets.token_urlsafe), not user-chosen passwords, so a fast
+    cryptographic hash is enough — there's no realistic brute-force risk
+    to slow down with a deliberately slow KDF like bcrypt (that exists to
+    defend low-entropy secrets, e.g. human passwords, against guessing).
+    """
+    return hashlib.sha256(key.encode()).hexdigest()
 
 
 # ── Mock-endpoint auth ─────────────────────────────────────────
@@ -50,8 +57,11 @@ async def enforce_auth(request: Request, auth_type: AuthType) -> None:
                 headers={"WWW-Authenticate": "ApiKey"},
                 detail="API key required — pass X-API-Key header or ?api_key= query param",
             )
-        valid = {rec.key for rec in data.api_keys.values()}
-        if key not in valid:
+        key_hash = hash_api_key(key)
+        valid = any(
+            secrets.compare_digest(key_hash, rec.key_hash) for rec in data.api_keys.values()
+        )
+        if not valid:
             raise HTTPException(status_code=403, detail="Invalid API key")
 
     elif auth_type == AuthType.basic:

@@ -1,7 +1,17 @@
 import jwt as pyjwt
 
+from app import storage
+
 
 # ── API keys ─────────────────────────────────────────────────────
+
+def test_api_key_plaintext_never_persisted_to_disk(client, auth_headers):
+    created = client.post("/admin/auth/api-keys", json={"name": "svc"}, headers=auth_headers).json()
+    full_key = created["key"]
+
+    raw = storage.CONFIG_FILE.read_text(encoding="utf-8")
+    assert full_key not in raw
+
 
 def test_create_and_list_api_keys(client, auth_headers):
     created = client.post("/admin/auth/api-keys", json={"name": "my-service"}, headers=auth_headers)

@@ -50,8 +50,28 @@ def test_create_endpoint_rejects_unsupported_extension(client, auth_headers):
     assert resp.status_code == 400
 
 
+def test_create_endpoint_rejects_oversized_file(client, auth_headers):
+    from app.admin import MAX_UPLOAD_BYTES
+
+    oversized = b"a" * (MAX_UPLOAD_BYTES + 1)
+    resp = _upload(client, auth_headers, filename="huge.json", content=oversized)
+    assert resp.status_code == 413
+
+
 def test_create_endpoint_rejects_malformed_json(client, auth_headers):
     resp = _upload(client, auth_headers, filename="bad.json", content=b"{not valid json")
+    assert resp.status_code == 400
+
+
+def test_create_endpoint_rejects_xml_entity_expansion_bomb(client, auth_headers):
+    bomb = b"""<?xml version="1.0"?>
+<!DOCTYPE lolz [
+ <!ENTITY a "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA">
+ <!ENTITY b "&a;&a;&a;&a;&a;&a;&a;&a;&a;&a;">
+ <!ENTITY c "&b;&b;&b;&b;&b;&b;&b;&b;&b;&b;">
+]>
+<lolz>&c;</lolz>"""
+    resp = _upload(client, auth_headers, path="/api/bomb", filename="bomb.xml", content=bomb)
     assert resp.status_code == 400
 
 
