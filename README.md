@@ -364,6 +364,12 @@ mockapi endpoint list
 └──────────┴────────┴──────────────┴─────────┴────────────┴──────┘
 ```
 
+**Update an endpoint** (only the fields you pass are changed):
+```bash
+mockapi endpoint update b9dee069-<full-id-from-list> --method POST --desc "now a POST"
+```
+Pass `--file` to replace the underlying data file — the old one is deleted.
+
 **Delete an endpoint** (also deletes its data file):
 ```bash
 mockapi endpoint delete b9dee069-<full-id-from-list>
@@ -409,6 +415,12 @@ mockapi endpoint create                             Create a mock endpoint
   --desc  TEXT        Optional description
 
 mockapi endpoint list                               List all endpoints
+mockapi endpoint update ID                          Update an endpoint (only passed fields change)
+  --path  PATH        New URL path
+  --method METHOD     New HTTP method
+  --auth  TYPE        New auth type: none | api_key | basic | jwt
+  --desc  TEXT        New description
+  --file  FILE        Replacement data file (deletes the old one)
 mockapi endpoint delete ID                          Delete endpoint + its file
 
 mockapi auth api-key create NAME                    Generate an API key

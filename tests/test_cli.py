@@ -69,6 +69,30 @@ def test_endpoint_create_missing_file_errors(cli_env, tmp_path):
     assert "File not found" in result.stdout
 
 
+def test_endpoint_update(cli_env, tmp_path):
+    csv_file = tmp_path / "users.csv"
+    csv_file.write_text("id,name\n1,Alice\n")
+    created = runner.invoke(cli_main.app, ["endpoint", "create", "--path", "/api/users", "--file", str(csv_file)])
+    id_line = next(line for line in created.stdout.splitlines() if line.strip().startswith("ID:"))
+    endpoint_id = id_line.split("ID:")[1].strip()
+
+    result = runner.invoke(cli_main.app, ["endpoint", "update", endpoint_id, "--desc", "updated description"])
+    assert result.exit_code == 0, result.stdout
+    assert "Endpoint updated" in result.stdout
+
+
+def test_endpoint_update_with_no_fields_errors(cli_env, tmp_path):
+    csv_file = tmp_path / "users.csv"
+    csv_file.write_text("id,name\n1,Alice\n")
+    created = runner.invoke(cli_main.app, ["endpoint", "create", "--path", "/api/users", "--file", str(csv_file)])
+    id_line = next(line for line in created.stdout.splitlines() if line.strip().startswith("ID:"))
+    endpoint_id = id_line.split("ID:")[1].strip()
+
+    result = runner.invoke(cli_main.app, ["endpoint", "update", endpoint_id])
+    assert result.exit_code != 0
+    assert "Nothing to update" in result.stdout
+
+
 def test_endpoint_list_empty(cli_env):
     result = runner.invoke(cli_main.app, ["endpoint", "list"])
     assert result.exit_code == 0
