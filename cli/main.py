@@ -181,6 +181,54 @@ def endpoint_list():
     console.print(table)
 
 
+@endpoint_app.command("update")
+def endpoint_update(
+    endpoint_id: str = typer.Argument(..., help="Full endpoint ID (from list)"),
+    path: Optional[str] = typer.Option(None, "--path", "-p", help="New URL path"),
+    method: Optional[str] = typer.Option(None, "--method", "-m", help="New HTTP method"),
+    auth: Optional[str] = typer.Option(None, "--auth", "-a", help="New auth type: none | api_key | basic | jwt"),
+    description: Optional[str] = typer.Option(None, "--desc", "-d", help="New description"),
+    file: Optional[Path] = typer.Option(None, "--file", "-f", help="Replacement CSV, JSON, or XML file"),
+):
+    """Update an existing endpoint. Only the fields you pass are changed."""
+    if file is not None and not file.exists():
+        console.print(f"[red]File not found:[/red] {file}")
+        raise typer.Exit(1)
+
+    fields: dict = {}
+    if path is not None:
+        fields["path"] = path
+    if method is not None:
+        fields["method"] = method.upper()
+    if auth is not None:
+        fields["auth_type"] = auth
+    if description is not None:
+        fields["description"] = description
+
+    if not fields and file is None:
+        console.print("[yellow]Nothing to update — pass at least one field to change.[/yellow]")
+        raise typer.Exit(1)
+
+    with _client() as c:
+        if file is not None:
+            with open(file, "rb") as fh:
+                resp = c.patch(
+                    f"/admin/endpoints/{endpoint_id}",
+                    data=fields,
+                    files={"file": (file.name, fh, "application/octet-stream")},
+                )
+        else:
+            resp = c.patch(f"/admin/endpoints/{endpoint_id}", data=fields)
+
+    result = _ok(resp)
+    ep = result["endpoint"]
+    art = result["artifact"]
+
+    console.print(f"[green]Endpoint updated:[/green] {ep['method']} {ep['path']}")
+    console.print(f"  Auth:     {ep['auth_type']}")
+    console.print(f"  File:     {art['name']}  ({art['format'].upper()}, {art.get('row_count') or '?'} rows)")
+
+
 @endpoint_app.command("delete")
 def endpoint_delete(
     endpoint_id: str = typer.Argument(..., help="Full endpoint ID (from list)"),

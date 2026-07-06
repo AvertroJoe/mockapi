@@ -4,6 +4,7 @@ Admin API — all routes are prefixed /admin and require the admin Bearer token.
 Endpoints:
   POST   /admin/endpoints          create endpoint + upload its artifact in one step
   GET    /admin/endpoints          list endpoints
+  PATCH  /admin/endpoints/{id}     update endpoint fields and/or replace its artifact
   DELETE /admin/endpoints/{id}     delete endpoint + its artifact file
 
   GET    /admin/auth/api-keys      list API keys (masked)
@@ -168,6 +169,73 @@ def _validate_xml(text: str) -> int:
     return len(list(root))
 
 
+def _detect_format(filename: str) -> str:
+    if filename.endswith(".csv"):
+        return "csv"
+    elif filename.endswith(".json"):
+        return "json"
+    elif filename.endswith(".xml"):
+        return "xml"
+    raise validation_error("file", "Only .csv, .json, and .xml files are supported")
+
+
+def _decode_nonempty_text(content: bytes) -> str:
+    try:
+        text = content.decode("utf-8")
+    except UnicodeDecodeError:
+        raise validation_error("file", "File is not valid UTF-8 text")
+    if not text.strip():
+        raise validation_error("file", "File is empty")
+    return text
+
+
+def _validate_file_content(fmt: str, text: str) -> Optional[int]:
+    try:
+        if fmt == "csv":
+            return _validate_csv(text)
+        elif fmt == "json":
+            return _validate_json(text)
+        else:  # xml
+            return _validate_xml(text)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise validation_error("file", f"Could not parse file: {exc}")
+
+
+async def _process_upload(file: UploadFile) -> ArtifactRecord:
+    """Validate an uploaded file end to end and persist it, returning the
+    new artifact record. Shared by create_endpoint and update_endpoint."""
+    content = await _read_limited(file, MAX_UPLOAD_BYTES)
+    original_name = file.filename or "upload"
+
+    fmt = _detect_format(original_name)
+    text = _decode_nonempty_text(content)
+    row_count = _validate_file_content(fmt, text)
+
+    artifact_id = str(uuid.uuid4())
+    stored_filename = f"{artifact_id}{Path(original_name).suffix}"
+    (storage.ARTIFACTS_DIR / stored_filename).write_bytes(content)
+
+    return ArtifactRecord(
+        id=artifact_id,
+        name=original_name,
+        filename=stored_filename,
+        format=fmt,
+        row_count=row_count,
+    )
+
+
+def _check_no_conflicting_endpoint(data, path: str, method: str, ignore_id: Optional[str] = None) -> None:
+    for ep in data.endpoints.values():
+        if ep.id == ignore_id:
+            continue
+        if ep.path == path and ep.method == method:
+            raise HTTPException(
+                status_code=409, detail=f"Endpoint {method} {path} already exists"
+            )
+
+
 @router.post("/endpoints", summary="Create a mock endpoint (uploads file atomically)")
 async def create_endpoint(
     path: str = Form(..., description="URL path, e.g. /api/users"),
@@ -178,69 +246,20 @@ async def create_endpoint(
     _: None = Depends(_check_admin),
 ):
     path = _validate_path(path)
+    artifact = await _process_upload(file)
 
-    content = await _read_limited(file, MAX_UPLOAD_BYTES)
-    original_name = file.filename or "upload"
+    _check_no_conflicting_endpoint(storage.get_data(), path, method.value)
 
-    if original_name.endswith(".csv"):
-        fmt = "csv"
-    elif original_name.endswith(".json"):
-        fmt = "json"
-    elif original_name.endswith(".xml"):
-        fmt = "xml"
-    else:
-        raise validation_error("file", "Only .csv, .json, and .xml files are supported")
-
-    try:
-        text = content.decode("utf-8")
-    except UnicodeDecodeError:
-        raise validation_error("file", "File is not valid UTF-8 text")
-
-    if not text.strip():
-        raise validation_error("file", "File is empty")
-
-    try:
-        if fmt == "csv":
-            row_count = _validate_csv(text)
-        elif fmt == "json":
-            row_count = _validate_json(text)
-        else:  # xml
-            row_count = _validate_xml(text)
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise validation_error("file", f"Could not parse file: {exc}")
-
-    # Check for duplicate endpoint
-    data = storage.get_data()
-    for ep in data.endpoints.values():
-        if ep.path == path and ep.method == method.value:
-            raise HTTPException(
-                status_code=409,
-                detail=f"Endpoint {method.value} {path} already exists",
-            )
-
-    artifact_id = str(uuid.uuid4())
-    stored_filename = f"{artifact_id}{Path(original_name).suffix}"
-    (storage.ARTIFACTS_DIR / stored_filename).write_bytes(content)
-
-    artifact = ArtifactRecord(
-        id=artifact_id,
-        name=original_name,
-        filename=stored_filename,
-        format=fmt,
-        row_count=row_count,
-    )
     endpoint = EndpointRecord(
         path=path,
         method=method.value,
-        artifact_id=artifact_id,
+        artifact_id=artifact.id,
         auth_type=auth_type,
         description=description,
     )
 
     def _apply(d):
-        d.artifacts[artifact_id] = artifact
+        d.artifacts[artifact.id] = artifact
         d.endpoints[endpoint.id] = endpoint
 
     storage.mutate(_apply)
@@ -265,6 +284,61 @@ async def list_endpoints(_: None = Depends(_check_admin)):
             }
         )
     return result
+
+
+@router.patch("/endpoints/{endpoint_id}", summary="Update an existing endpoint")
+async def update_endpoint(
+    endpoint_id: str,
+    path: Optional[str] = Form(None, description="New URL path, e.g. /api/users"),
+    method: Optional[HTTPMethod] = Form(None, description="New HTTP method"),
+    auth_type: Optional[AuthType] = Form(None),
+    description: Optional[str] = Form(None),
+    file: Optional[UploadFile] = File(None, description="Replacement CSV, JSON, or XML artifact"),
+    _: None = Depends(_check_admin),
+):
+    """All fields are optional — only what's provided gets changed. Omit
+    `file` to keep the existing artifact; provide one to replace it."""
+    data = storage.get_data()
+    endpoint = data.endpoints.get(endpoint_id)
+    if not endpoint:
+        raise HTTPException(status_code=404, detail="Endpoint not found")
+
+    new_path = _validate_path(path) if path is not None else endpoint.path
+    new_method = method.value if method is not None else endpoint.method
+    _check_no_conflicting_endpoint(data, new_path, new_method, ignore_id=endpoint_id)
+
+    new_artifact = await _process_upload(file) if file is not None else None
+    # Captured before mutate() runs — d.artifacts and data.artifacts are the
+    # same dict (mutate operates on the process-wide storage in place), so
+    # reading this *after* mutate would find it already deleted below.
+    old_artifact = data.artifacts.get(endpoint.artifact_id) if new_artifact is not None else None
+
+    def _apply(d):
+        ep = d.endpoints[endpoint_id]
+        ep.path = new_path
+        ep.method = new_method
+        if auth_type is not None:
+            ep.auth_type = auth_type
+        if description is not None:
+            ep.description = description
+        if new_artifact is not None:
+            ep.artifact_id = new_artifact.id
+            d.artifacts[new_artifact.id] = new_artifact
+            d.artifacts.pop(old_artifact.id, None)
+
+    storage.mutate(_apply)
+
+    # Remove the replaced file from disk after the state change is committed.
+    if old_artifact is not None:
+        old_path = storage.ARTIFACTS_DIR / old_artifact.filename
+        if old_path.exists():
+            old_path.unlink()
+
+    updated_artifact = new_artifact if new_artifact is not None else data.artifacts[endpoint.artifact_id]
+    return {
+        "endpoint": endpoint.model_dump(),
+        "artifact": updated_artifact.model_dump(),
+    }
 
 
 @router.delete("/endpoints/{endpoint_id}", summary="Delete endpoint and its artifact")
