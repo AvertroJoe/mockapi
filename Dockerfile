@@ -1,3 +1,15 @@
+# ── Frontend build stage ────────────────────────────────────────
+FROM node:20-slim AS ui-build
+
+WORKDIR /ui
+
+COPY ui/package.json ui/package-lock.json ./
+RUN npm ci
+
+COPY ui/ ./
+RUN npm run build
+
+# ── Backend runtime ──────────────────────────────────────────────
 FROM python:3.12-slim
 
 WORKDIR /app
@@ -9,6 +21,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application source
 COPY app/ ./app/
 COPY cli/ ./cli/
+
+# Compiled UI static assets — served at /ui by app.main
+COPY --from=ui-build /ui/dist ./ui/dist
 
 # Data directory is expected to be a mounted volume at runtime.
 # Run as an unprivileged user rather than the container default (root) —

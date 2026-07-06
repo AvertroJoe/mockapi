@@ -1,13 +1,17 @@
 import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.admin import router as admin_router
 from app.mock import handle_mock_request
 from app.storage import init_storage
+
+UI_DIST = Path(__file__).resolve().parent.parent / "ui" / "dist"
 
 _INSECURE_DEFAULT_TOKEN = "changeme"
 
@@ -75,7 +79,22 @@ async def health():
     return {"status": "ok"}
 
 
-# Catch-all: everything that isn't /admin/* or /health is a potential mock endpoint.
+# Web UI, if it's been built (ui/dist exists — see the Dockerfile's frontend
+# build stage). Registered ahead of the catch-all, same as /admin and
+# /health, so it isn't shadowed by the mock handler.
+if UI_DIST.exists():
+    app.mount("/ui/assets", StaticFiles(directory=UI_DIST / "assets"), name="ui-assets")
+
+    @app.get("/ui", include_in_schema=False)
+    @app.get("/ui/{full_path:path}", include_in_schema=False)
+    async def serve_ui(full_path: str = "") -> FileResponse:
+        # A single-page app: any /ui/* path that isn't a real asset file is
+        # a client-side route (e.g. /ui/connectors/new) — always hand back
+        # index.html and let React Router take it from there.
+        return FileResponse(UI_DIST / "index.html")
+
+
+# Catch-all: everything that isn't /admin/*, /health, or /ui/* is a potential mock endpoint.
 @app.api_route(
     "/{path:path}",
     methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"],
