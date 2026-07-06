@@ -6,10 +6,11 @@ A lightweight API mocking tool. Upload a CSV or JSON file, register it as an HTT
 
 ## How it works
 
-There are two parts:
+There are three parts:
 
 - **Server** — a FastAPI app that serves registered mock endpoints. All management happens through a protected `/admin` API.
 - **CLI** (`mockapi`) — a command-line tool you run on your local machine to talk to the server's admin API.
+- **Web UI** — a browser-based alternative to the CLI, served by the same server at `/ui` (e.g. `http://<your-ec2-ip>:8000/ui`). Both drive the exact same admin API, so anything you can do with one you can do with the other.
 
 Every mock endpoint is tied 1:1 to a data file. Creating an endpoint uploads the file in the same step. Deleting an endpoint removes the file too.
 
@@ -151,6 +152,18 @@ Verify the connection:
 mockapi ping
 # Server is up. Status: ok
 ```
+
+---
+
+## Using the web UI
+
+Instead of (or alongside) the CLI, open `http://<your-ec2-ip>:8000/ui` in a browser. The first visit asks for the server's `ADMIN_TOKEN` — it's stored only in your browser (`localStorage`), never sent anywhere except back to this server as the same Bearer token the CLI and API already use.
+
+- **Home** — a summary of currently-served connectors and the server's own address (handy for pointing a teammate or the CLI at it).
+- **Connectors** — list, edit, or delete any registered endpoint.
+- **Build New** — the same form used for editing, for creating a connector from scratch.
+
+There's no separate user/permission system yet — it's the same single shared admin token as everything else in this README.
 
 ---
 
