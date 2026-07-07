@@ -8,6 +8,7 @@ import {
   updateEndpoint,
   type Endpoint,
 } from "../api";
+import { knownRoots, slugify } from "../slug";
 
 interface LocationState {
   endpoint?: Endpoint;
@@ -28,9 +29,31 @@ export function ConnectorForm() {
   const [description, setDescription] = useState(existing?.description ?? "");
   const [file, setFile] = useState<File | null>(null);
 
+  // Create-only: build the path from a root + a friendly endpoint name
+  // instead of hand-typing/slugifying it. Edit mode keeps the direct Path
+  // field above — edits are usually small, targeted changes, not
+  // reassembling a path from scratch.
+  const [root, setRoot] = useState("");
+  const [endpointName, setEndpointName] = useState("");
+  const [rootOptions, setRootOptions] = useState<string[]>([]);
+
+  const normalizedRoot = root.startsWith("/") ? root : root ? `/${root}` : "";
+  const computedPath = endpointName.trim()
+    ? `${normalizedRoot.replace(/\/+$/, "")}/${slugify(endpointName)}`
+    : normalizedRoot;
+
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    if (isEdit) return;
+    listEndpoints()
+      .then((all) => setRootOptions(knownRoots(all)))
+      .catch(() => {
+        // Non-fatal — the root field still works as a free-text input.
+      });
+  }, [isEdit]);
 
   // Refresh fallback: if we landed here directly (e.g. a page reload) with
   // no router state carrying the endpoint, fetch the list and find it —
@@ -71,12 +94,15 @@ export function ConnectorForm() {
           file,
         });
       } else {
-        if (!file) {
-          setFieldErrors({ file: "A data file is required" });
+        const errors: Record<string, string> = {};
+        if (!root.trim()) errors.root = "A root path is required";
+        if (!file) errors.file = "A data file is required";
+        if (Object.keys(errors).length) {
+          setFieldErrors(errors);
           setSubmitting(false);
           return;
         }
-        await createEndpoint({ path, method, auth_type: authType, description, file });
+        await createEndpoint({ path: computedPath, method, auth_type: authType, description, file });
       }
       navigate("/connectors");
     } catch (err) {
@@ -108,18 +134,61 @@ export function ConnectorForm() {
       <form className="card" onSubmit={handleSubmit} style={{ maxWidth: 560 }}>
         {error && <div className="error-banner">{error}</div>}
 
-        <div className="field">
-          <label htmlFor="path">Path</label>
-          <input
-            id="path"
-            type="text"
-            placeholder="/api/users"
-            value={path}
-            onChange={(e) => setPath(e.target.value)}
-            required
-          />
-          {fieldErrors.path && <div className="field-hint" style={{ color: "var(--color-danger)" }}>{fieldErrors.path}</div>}
-        </div>
+        {isEdit ? (
+          <div className="field">
+            <label htmlFor="path">Path</label>
+            <input
+              id="path"
+              type="text"
+              placeholder="/api/users"
+              value={path}
+              onChange={(e) => setPath(e.target.value)}
+              required
+            />
+            {fieldErrors.path && <div className="field-hint" style={{ color: "var(--color-danger)" }}>{fieldErrors.path}</div>}
+          </div>
+        ) : (
+          <>
+            <div className="field-row">
+              <div className="field">
+                <label htmlFor="root-path">Root</label>
+                <input
+                  id="root-path"
+                  type="text"
+                  placeholder="/api/Defender"
+                  value={root}
+                  onChange={(e) => setRoot(e.target.value)}
+                  list="known-roots"
+                  required
+                />
+                <datalist id="known-roots">
+                  {rootOptions.map((r) => (
+                    <option key={r} value={r} />
+                  ))}
+                </datalist>
+                {fieldErrors.root && <div className="field-hint" style={{ color: "var(--color-danger)" }}>{fieldErrors.root}</div>}
+              </div>
+
+              <div className="field">
+                <label htmlFor="endpoint-name">Endpoint name (optional)</label>
+                <input
+                  id="endpoint-name"
+                  type="text"
+                  placeholder="Vulnerability scanning"
+                  value={endpointName}
+                  onChange={(e) => setEndpointName(e.target.value)}
+                />
+              </div>
+            </div>
+            <div className="field">
+              <div className="field-hint">
+                Will register as: <span className="mono">{computedPath || "—"}</span>. Pick an existing root to
+                nest a new endpoint under it, or type a new one. Leave the name blank to create the root itself.
+              </div>
+              {fieldErrors.path && <div className="field-hint" style={{ color: "var(--color-danger)" }}>{fieldErrors.path}</div>}
+            </div>
+          </>
+        )}
 
         <div className="field-row">
           <div className="field">
