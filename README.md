@@ -160,8 +160,8 @@ mockapi ping
 Instead of (or alongside) the CLI, open `http://<your-ec2-ip>:8000/ui` in a browser. The first visit asks for the server's `ADMIN_TOKEN` — it's stored only in your browser (`localStorage`), never sent anywhere except back to this server as the same Bearer token the CLI and API already use.
 
 - **Home** — a summary of currently-served connectors and the server's own address (handy for pointing a teammate or the CLI at it).
-- **Connectors** — list, edit, or delete any registered endpoint.
-- **Build New** — the same form used for editing, for creating a connector from scratch.
+- **Connectors** — list, edit, or delete any registered endpoint. Endpoints nested under an existing root (see "Grouping related endpoints under a root" below) are shown indented beneath it.
+- **Build New** — a Root + Endpoint name builder: pick an existing root from the suggestions or type a new one, then just provide the endpoint-specific name — the path is assembled and slugified for you. Editing an existing connector still uses a single direct Path field, since edits are usually small, targeted changes rather than reassembling a path from scratch.
 
 There's no separate user/permission system yet — it's the same single shared admin token as everything else in this README.
 
@@ -239,11 +239,38 @@ curl http://<your-ec2-ip>:8000/api/users
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--path` | required | URL path, e.g. `/api/users` |
+| `--path` | — | Full URL path, e.g. `/api/users`. Alternative to `--root`/`--name`. |
+| `--root` | — | Root path to create or nest under, e.g. `/api/Defender`. Alternative to `--path`. |
+| `--name` | — | Endpoint name under `--root`, e.g. `"Vulnerability scanning"` — auto-slugified. Only valid together with `--root`. |
 | `--file` | required | Path to `.csv`, `.json`, or `.xml` file |
 | `--method` | `GET` | HTTP method (`GET`, `POST`, `PUT`, etc.) |
 | `--auth` | `none` | Auth type: `none`, `api_key`, `basic`, or `jwt` |
 | `--desc` | — | Optional description shown in listings |
+
+Either `--path` or `--root` is required (not both).
+
+### Grouping related endpoints under a root
+
+If you're modeling one tool/integration as several related mock endpoints — say, a "Defender" integration with separate resources for vulnerability scanning and NIST compliance data — `--root`/`--name` builds the path for you instead of hand-typing and slugifying it yourself:
+
+```bash
+# Create the root itself (optional — you can skip straight to children)
+mockapi endpoint create --root /api/Defender --file defender.json
+
+# Nest named endpoints one level under it
+mockapi endpoint create --root /api/Defender --name "Vulnerability scanning" --file scan.csv
+mockapi endpoint create --root /api/Defender --name "NIST 800-53" --file nist.csv
+```
+
+The second command registers `/api/Defender/vulnerability-scanning` — the name is lowercased and non-alphanumeric runs become hyphens. Both `mockapi endpoint list` and the web UI's Connectors page then show `/api/Defender` as a group, with its children nested beneath it:
+
+```
+GET   /api/Defender
+GET     └─ /api/Defender/nist-800-53
+GET     └─ /api/Defender/vulnerability-scanning
+```
+
+Grouping only happens when the shared root is a real, existing endpoint — two unrelated endpoints that merely happen to share a shallow path prefix (e.g. `/api/Defender` and `/api/users`, both technically under `/api`) are never grouped, since `/api` was never deliberately created as anything. This is purely a display/creation convenience — nothing changes about how endpoints are stored, and the admin API's own `--path`-based contract is unaffected.
 
 ### Validation rules
 
@@ -421,7 +448,9 @@ mockapi auth jwt token         # generate a token
 mockapi ping                                        Check server connectivity
 
 mockapi endpoint create                             Create a mock endpoint
-  --path  PATH        URL path (required)
+  --path  PATH        Full URL path (either --path or --root is required)
+  --root  PATH        Root to create or nest under, e.g. /api/Defender
+  --name  TEXT        Endpoint name under --root — auto-slugified
   --file  FILE        Data file — .csv, .json, or .xml (required)
   --method METHOD     HTTP method (default: GET)
   --auth  TYPE        none | api_key | basic | jwt (default: none)

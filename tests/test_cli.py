@@ -49,6 +49,68 @@ def test_endpoint_create_and_list(cli_env, tmp_path):
     assert "users.csv" in listed.stdout
 
 
+def test_endpoint_create_with_root_and_name_slugifies_path(cli_env, tmp_path):
+    csv_file = tmp_path / "scan.csv"
+    csv_file.write_text("id,severity\n1,high\n")
+
+    result = runner.invoke(
+        cli_main.app,
+        [
+            "endpoint", "create",
+            "--root", "/api/Defender",
+            "--name", "Vulnerability scanning",
+            "--file", str(csv_file),
+        ],
+    )
+    assert result.exit_code == 0, result.stdout
+    assert "/api/Defender/vulnerability-scanning" in result.stdout
+
+
+def test_endpoint_create_with_root_only_creates_the_root_itself(cli_env, tmp_path):
+    csv_file = tmp_path / "root.csv"
+    csv_file.write_text("id\n1\n")
+
+    result = runner.invoke(
+        cli_main.app,
+        ["endpoint", "create", "--root", "/api/Defender", "--file", str(csv_file)],
+    )
+    assert result.exit_code == 0, result.stdout
+    assert "/api/Defender" in result.stdout
+
+
+def test_endpoint_create_rejects_path_and_root_together(cli_env, tmp_path):
+    csv_file = tmp_path / "x.csv"
+    csv_file.write_text("id\n1\n")
+
+    result = runner.invoke(
+        cli_main.app,
+        ["endpoint", "create", "--path", "/api/x", "--root", "/api/y", "--file", str(csv_file)],
+    )
+    assert result.exit_code != 0
+    assert "not both" in result.stdout
+
+
+def test_endpoint_create_rejects_neither_path_nor_root(cli_env, tmp_path):
+    csv_file = tmp_path / "x.csv"
+    csv_file.write_text("id\n1\n")
+
+    result = runner.invoke(cli_main.app, ["endpoint", "create", "--file", str(csv_file)])
+    assert result.exit_code != 0
+    assert "Provide either" in result.stdout
+
+
+def test_endpoint_create_rejects_name_without_root(cli_env, tmp_path):
+    csv_file = tmp_path / "x.csv"
+    csv_file.write_text("id\n1\n")
+
+    result = runner.invoke(
+        cli_main.app,
+        ["endpoint", "create", "--path", "/api/x", "--name", "Something", "--file", str(csv_file)],
+    )
+    assert result.exit_code != 0
+    assert "--name only makes sense" in result.stdout
+
+
 def test_endpoint_create_shows_structured_validation_error(cli_env, tmp_path):
     csv_file = tmp_path / "users.csv"
     csv_file.write_text("id,name\n1,Alice\n")
@@ -97,6 +159,30 @@ def test_endpoint_list_empty(cli_env):
     result = runner.invoke(cli_main.app, ["endpoint", "list"])
     assert result.exit_code == 0
     assert "No endpoints registered" in result.stdout
+
+
+def test_endpoint_list_shows_grouped_root_and_children(cli_env, tmp_path):
+    root_file = tmp_path / "root.csv"
+    root_file.write_text("id\n1\n")
+    child_file = tmp_path / "child.csv"
+    child_file.write_text("id\n1\n")
+    other_file = tmp_path / "other.csv"
+    other_file.write_text("id\n1\n")
+
+    runner.invoke(cli_main.app, ["endpoint", "create", "--root", "/api/Defender", "--file", str(root_file)])
+    runner.invoke(
+        cli_main.app,
+        ["endpoint", "create", "--root", "/api/Defender", "--name", "NIST", "--file", str(child_file)],
+    )
+    runner.invoke(cli_main.app, ["endpoint", "create", "--path", "/api/users", "--file", str(other_file)])
+
+    result = runner.invoke(cli_main.app, ["endpoint", "list"], color=False)
+    assert result.exit_code == 0
+    assert "/api/Defender" in result.stdout
+    assert "└─ /api/Defender/nist" in result.stdout
+    assert "/api/users" in result.stdout
+    # The grouped child line should appear after its root, not before.
+    assert result.stdout.index("/api/Defender ") < result.stdout.index("└─ /api/Defender/nist")
 
 
 def test_endpoint_delete_with_confirmation(cli_env, tmp_path):

@@ -1,6 +1,43 @@
-import { useEffect, useState } from "react";
+import { Fragment, type ReactNode, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { deleteEndpoint, listEndpoints, type Endpoint } from "../api";
+import { deslugify, groupEndpoints, lastSegment } from "../slug";
+
+interface ConnectorRowProps {
+  ep: Endpoint;
+  pathContent: ReactNode;
+  onDelete: (ep: Endpoint) => void;
+  rowClassName?: string;
+}
+
+function ConnectorRow({ ep, pathContent, onDelete, rowClassName }: ConnectorRowProps) {
+  return (
+    <tr className={rowClassName}>
+      <td>
+        <span className="badge badge-accent">{ep.method}</span>
+      </td>
+      <td>{pathContent}</td>
+      <td>
+        {ep.auth_type === "none" ? (
+          <span className="badge">none</span>
+        ) : (
+          <span className="badge badge-success">{ep.auth_type}</span>
+        )}
+      </td>
+      <td>{ep.artifact_name ?? "—"}</td>
+      <td>{ep.artifact_rows ?? "—"}</td>
+      <td>{ep.description ?? "—"}</td>
+      <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
+        <Link to={`/connectors/${ep.id}/edit`} state={{ endpoint: ep }} className="btn btn-secondary btn-sm">
+          Edit
+        </Link>{" "}
+        <button className="btn-danger btn-sm" onClick={() => onDelete(ep)}>
+          Delete
+        </button>
+      </td>
+    </tr>
+  );
+}
 
 export function Connectors() {
   const [endpoints, setEndpoints] = useState<Endpoint[] | null>(null);
@@ -66,36 +103,45 @@ export function Connectors() {
               </tr>
             </thead>
             <tbody>
-              {endpoints.map((ep) => (
-                <tr key={ep.id}>
-                  <td>
-                    <span className="badge badge-accent">{ep.method}</span>
-                  </td>
-                  <td className="mono">{ep.path}</td>
-                  <td>
-                    {ep.auth_type === "none" ? (
-                      <span className="badge">none</span>
-                    ) : (
-                      <span className="badge badge-success">{ep.auth_type}</span>
-                    )}
-                  </td>
-                  <td>{ep.artifact_name ?? "—"}</td>
-                  <td>{ep.artifact_rows ?? "—"}</td>
-                  <td>{ep.description ?? "—"}</td>
-                  <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
-                    <Link
-                      to={`/connectors/${ep.id}/edit`}
-                      state={{ endpoint: ep }}
-                      className="btn btn-secondary btn-sm"
-                    >
-                      Edit
-                    </Link>{" "}
-                    <button className="btn-danger btn-sm" onClick={() => setPendingDelete(ep)}>
-                      Delete
-                    </button>
-                  </td>
-                </tr>
-              ))}
+              {(() => {
+                const { groups, ungrouped } = groupEndpoints(endpoints);
+                return (
+                  <>
+                    {groups.map((group) => (
+                      <Fragment key={group.parentPath}>
+                        <ConnectorRow
+                          key={group.root.id}
+                          ep={group.root}
+                          rowClassName="row-root"
+                          pathContent={<span className="mono">{group.root.path}</span>}
+                          onDelete={setPendingDelete}
+                        />
+                        {group.children.map((child) => (
+                          <ConnectorRow
+                            key={child.id}
+                            ep={child}
+                            rowClassName="row-child"
+                            pathContent={
+                              <span className="mono child-path" title={child.path}>
+                                &nbsp;&nbsp;└ {deslugify(lastSegment(child.path))}
+                              </span>
+                            }
+                            onDelete={setPendingDelete}
+                          />
+                        ))}
+                      </Fragment>
+                    ))}
+                    {ungrouped.map((ep) => (
+                      <ConnectorRow
+                        key={ep.id}
+                        ep={ep}
+                        pathContent={<span className="mono">{ep.path}</span>}
+                        onDelete={setPendingDelete}
+                      />
+                    ))}
+                  </>
+                );
+              })()}
             </tbody>
           </table>
         )}

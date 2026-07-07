@@ -199,6 +199,18 @@ tr:last-child td {
 .badge-accent { background: var(--color-accent-bg); color: var(--color-accent); }
 .badge-success { background: var(--color-success-bg); color: var(--color-success); }
 
+/* ── Grouped connectors (root + nested children) ─────────── */
+
+.row-root td:nth-child(2) {
+  font-weight: 600;
+}
+.row-child td {
+  background: var(--color-bg);
+}
+.child-path {
+  color: var(--color-text-muted);
+}
+
 /* ── Forms ────────────────────────────────────────────── */
 
 .field {
