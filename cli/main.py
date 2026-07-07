@@ -8,6 +8,7 @@ Configuration (env vars or .env file):
 
 Usage examples:
   mockapi endpoint create --path /api/users --file users.csv --auth api_key
+  mockapi endpoint create --root /api/Defender --name "Vulnerability scanning" --file scan.csv
   mockapi endpoint list
   mockapi endpoint delete <id>
 
@@ -27,6 +28,8 @@ import typer
 from dotenv import load_dotenv
 from rich.console import Console
 from rich.table import Table
+
+from cli.slug import deslugify, group_endpoints, last_segment, slugify
 
 load_dotenv()
 
@@ -105,7 +108,19 @@ def ping():
 
 @endpoint_app.command("create")
 def endpoint_create(
-    path: str = typer.Option(..., "--path", "-p", help="URL path, e.g. /api/users"),
+    path: Optional[str] = typer.Option(None, "--path", "-p", help="Full URL path, e.g. /api/users"),
+    root: Optional[str] = typer.Option(
+        None,
+        "--root",
+        "-r",
+        help="Existing or new root path to nest under, e.g. /api/Defender (alternative to --path)",
+    ),
+    name: Optional[str] = typer.Option(
+        None,
+        "--name",
+        "-n",
+        help="Endpoint name under --root, e.g. 'Vulnerability scanning' — auto-slugified",
+    ),
     file: Path = typer.Option(..., "--file", "-f", help="CSV or JSON file to serve"),
     method: str = typer.Option("GET", "--method", "-m", help="HTTP method"),
     auth: str = typer.Option(
@@ -116,7 +131,29 @@ def endpoint_create(
     ),
     description: Optional[str] = typer.Option(None, "--desc", "-d", help="Description"),
 ):
-    """Create a mock endpoint and upload its data file (one step)."""
+    """Create a mock endpoint and upload its data file (one step).
+
+    Either pass the full --path directly, or build it from --root plus
+    --name — e.g. `--root /api/Defender --name "Vulnerability scanning"`
+    registers /api/Defender/vulnerability-scanning without hand-typing or
+    slugifying it yourself. --root alone (no --name) creates the root
+    itself, so it can later show up as the head of a group.
+    """
+    if path and root:
+        console.print("[red]Use either --path or --root/--name, not both.[/red]")
+        raise typer.Exit(1)
+    if not path and not root:
+        console.print("[red]Provide either --path or --root.[/red]")
+        raise typer.Exit(1)
+    if name and not root:
+        console.print("[red]--name only makes sense together with --root.[/red]")
+        raise typer.Exit(1)
+
+    if path is None:
+        path = root if root.startswith("/") else f"/{root}"
+        if name:
+            path = f"{path.rstrip('/')}/{slugify(name)}"
+
     if not file.exists():
         console.print(f"[red]File not found:[/red] {file}")
         raise typer.Exit(1)
@@ -150,7 +187,12 @@ def endpoint_create(
 
 @endpoint_app.command("list")
 def endpoint_list():
-    """List all registered mock endpoints."""
+    """List all registered mock endpoints.
+
+    Endpoints nested one level under another endpoint's exact path (e.g.
+    created via `endpoint create --root`) are shown grouped: the root
+    first, its children indented beneath it.
+    """
     with _client() as c:
         items = _ok(c.get("/admin/endpoints"))
 
@@ -161,22 +203,32 @@ def endpoint_list():
     table = Table(title="Mock Endpoints", show_lines=True)
     table.add_column("ID", style="dim", no_wrap=True)
     table.add_column("Method", style="cyan")
-    table.add_column("Path", style="green")
+    table.add_column("Path", style="green", no_wrap=True)
     table.add_column("Auth")
     table.add_column("File")
     table.add_column("Rows", justify="right")
     table.add_column("Description")
 
-    for ep in items:
+    def add_row(ep: dict, path_display: str) -> None:
         table.add_row(
             ep["id"][:8] + "…",
             ep["method"],
-            ep["path"],
+            path_display,
             ep["auth_type"],
             ep.get("artifact_name") or "-",
             str(ep.get("artifact_rows") or "-"),
             ep.get("description") or "",
         )
+
+    groups, ungrouped = group_endpoints(items)
+
+    for group in groups:
+        add_row(group.root, f"[bold]{group.root['path']}[/bold]")
+        for child in group.children:
+            add_row(child, f"  └─ {child['path']}")
+
+    for ep in ungrouped:
+        add_row(ep, ep["path"])
 
     console.print(table)
 
